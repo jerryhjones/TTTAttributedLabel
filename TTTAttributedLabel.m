@@ -372,6 +372,46 @@ static inline NSAttributedString * NSAttributedStringBySettingColorFromContext(N
 
 #pragma mark -
 
+- (void)visibilityRangesForSize:(CGSize)size range:(CFRange)range numberOfLines:(NSUInteger)numberOfLines completion:(void(^)(CFRange visibleRange, CFRange overflowRange))completion
+{
+    if (!completion) {
+        return;
+    }
+    
+    CFRange stringRange = range;
+    if (range.length < 1) {
+        stringRange = CFRangeMake(0, [self.attributedText length]);
+    }
+    
+    CFRange visibleRange = stringRange;
+
+    // If the line count of the label more than 1, limit the range to size to the number of lines that have been set
+    CGMutablePathRef path = CGPathCreateMutable();
+    CGPathAddRect(path, NULL, CGRectMake(0.0f, 0.0f, size.width, CGFLOAT_MAX));
+    CTFrameRef frame = CTFramesetterCreateFrame(self.framesetter, CFRangeMake(0, 0), path, NULL);
+    CFArrayRef lines = CTFrameGetLines(frame);
+    
+    if (CFArrayGetCount(lines) > 0) {
+        NSInteger lastVisibleLineIndex = MIN(numberOfLines, CFArrayGetCount(lines)) - 1;
+        CTLineRef lastVisibleLine = CFArrayGetValueAtIndex(lines, lastVisibleLineIndex);
+        
+        CFRange rangeToLayout = CTLineGetStringRange(lastVisibleLine);
+        visibleRange = CFRangeMake(0, rangeToLayout.location + rangeToLayout.length);
+    }
+    
+    CFRelease(frame);
+    CFRelease(path);
+
+    
+    CFRange overflowRange = CFRangeMake(0, 0);
+    if (visibleRange.length < stringRange.length) {
+        overflowRange.location = visibleRange.length + 1;
+        overflowRange.length = stringRange.length - visibleRange.length - 1;
+    }
+    
+    completion(visibleRange, overflowRange);
+}
+
 - (NSTextCheckingResult *)linkAtCharacterIndex:(CFIndex)idx {
     for (NSTextCheckingResult *result in self.links) {
         NSRange range = result.range;
@@ -785,15 +825,38 @@ static inline NSAttributedString * NSAttributedStringBySettingColorFromContext(N
     
     // Adjust the font size to fit width, if necessarry 
     if (self.adjustsFontSizeToFitWidth && self.numberOfLines > 0) {
-        CGFloat textWidth = [self sizeThatFits:CGSizeZero].width;
-        CGFloat availableWidth = self.frame.size.width * self.numberOfLines;
-        if (self.numberOfLines > 1 && self.lineBreakMode == UILineBreakModeWordWrap) {
-            textWidth *= kTTTLineBreakWordWrapTextWidthScalingFactor;
-        }
-        
-        if (textWidth > availableWidth && textWidth > 0.0f) {
+        if (self.numberOfLines == 1) {
+            CGFloat availableWidth = rect.size.width * self.numberOfLines;
+            CGFloat textWidth = [self sizeThatFits:rect.size range:CFRangeMake(0, 0) numberOfLines:self.numberOfLines].width;
             originalAttributedText = [self.attributedText copy];
             self.text = NSAttributedStringByScalingFontSize(self.attributedText, availableWidth / textWidth, self.minimumFontSize);
+        } else {
+            __block CFRange visibleRange = CFRangeMake(0, 0);
+            __block CFRange overflowRange = CFRangeMake(0, 0);
+            [self visibilityRangesForSize:rect.size
+                                    range:CFRangeMake(0, 0)
+                            numberOfLines:self.numberOfLines
+                               completion:^(CFRange visible, CFRange overflow){
+                                   visibleRange = visible;
+                                   overflowRange = overflow;
+                               }];
+            
+            if (overflowRange.length > 0) {
+                CGFloat textWidth = [self sizeThatFits:rect.size range:overflowRange numberOfLines:1].width / self.numberOfLines;
+                if (self.lineBreakMode == UILineBreakModeWordWrap) {
+                    textWidth *= kTTTLineBreakWordWrapTextWidthScalingFactor;
+                }
+                
+                CGFloat availableWidth = rect.size.width * self.numberOfLines;
+                CGFloat scale = (availableWidth - textWidth) / availableWidth;
+                
+                if (scale < 1) {
+                    originalAttributedText = [self.attributedText copy];
+                    self.text = NSAttributedStringByScalingFontSize(self.attributedText, scale, self.minimumFontSize);
+                }
+                
+            }
+
         }
     }
     
@@ -843,30 +906,33 @@ static inline NSAttributedString * NSAttributedStringBySettingColorFromContext(N
     if (!self.attributedText) {
         return [super sizeThatFits:size];
     }
+
+    return [self sizeThatFits:size range:CFRangeMake(0, 0) numberOfLines:self.numberOfLines];
+}
+
+- (CGSize)sizeThatFits:(CGSize)size range:(CFRange)range numberOfLines:(NSUInteger)numberOfLines {
+    if (!self.attributedText) {
+        return [super sizeThatFits:size];
+    }
     
-    CFRange rangeToSize = CFRangeMake(0, [self.attributedText length]);
+    __block CFRange rangeToSize = range;
+    if (rangeToSize.length < 1) {
+        rangeToSize = CFRangeMake(0, [self.attributedText length]);
+    }
+    
+
     CGSize constraints = CGSizeMake(size.width, CGFLOAT_MAX);
-    
-    if (self.numberOfLines == 1) {
+    if (numberOfLines == 1) {
         // If there is one line, the size that fits is the full width of the line
         constraints = CGSizeMake(CGFLOAT_MAX, CGFLOAT_MAX);
-    } else if (self.numberOfLines > 0) {
-        // If the line count of the label more than 1, limit the range to size to the number of lines that have been set
-        CGMutablePathRef path = CGPathCreateMutable();
-        CGPathAddRect(path, NULL, CGRectMake(0.0f, 0.0f, constraints.width, CGFLOAT_MAX));
-        CTFrameRef frame = CTFramesetterCreateFrame(self.framesetter, CFRangeMake(0, 0), path, NULL);
-        CFArrayRef lines = CTFrameGetLines(frame);
-        
-        if (CFArrayGetCount(lines) > 0) {
-            NSInteger lastVisibleLineIndex = MIN(self.numberOfLines, CFArrayGetCount(lines)) - 1;
-            CTLineRef lastVisibleLine = CFArrayGetValueAtIndex(lines, lastVisibleLineIndex);
-            
-            CFRange rangeToLayout = CTLineGetStringRange(lastVisibleLine);
-            rangeToSize = CFRangeMake(0, rangeToLayout.location + rangeToLayout.length);
-        }
-        
-        CFRelease(frame);
-        CFRelease(path);
+    } else if (numberOfLines > 0) {
+        // Only size the visible range, limited by our line count and the framesetter
+        [self visibilityRangesForSize:size
+                                range:range
+                        numberOfLines:numberOfLines
+                           completion:^(CFRange visible, CFRange overflow){
+                               rangeToSize = visible;
+                           }];
     }
     
     CGSize suggestedSize = CTFramesetterSuggestFrameSizeWithConstraints(self.framesetter, rangeToSize, NULL, constraints, NULL);
