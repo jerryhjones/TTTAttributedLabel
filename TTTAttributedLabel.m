@@ -828,8 +828,10 @@ static inline NSAttributedString * NSAttributedStringBySettingColorFromContext(N
         if (self.numberOfLines == 1) {
             CGFloat availableWidth = rect.size.width * self.numberOfLines;
             CGFloat textWidth = [self sizeThatFits:rect.size range:CFRangeMake(0, 0) numberOfLines:self.numberOfLines].width;
-            originalAttributedText = [self.attributedText copy];
-            self.text = NSAttributedStringByScalingFontSize(self.attributedText, availableWidth / textWidth, self.minimumFontSize);
+			if (availableWidth < textWidth) {
+				originalAttributedText = [self.attributedText copy];
+				self.text = NSAttributedStringByScalingFontSize(self.attributedText, availableWidth / textWidth, self.minimumFontSize);
+			}
         } else {
             __block CFRange visibleRange = CFRangeMake(0, 0);
             __block CFRange overflowRange = CFRangeMake(0, 0);
