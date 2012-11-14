@@ -815,15 +815,69 @@ static inline NSAttributedString * NSAttributedStringBySettingColorFromContext(N
     return textRect;
 }
 
+
+- (void)fontScaleThatFits:(CGSize)size precision:(NSInteger)precision
+{
+	__block CFRange visibleRange = CFRangeMake(0, 0);
+	__block CFRange overflowRange = CFRangeMake(0, 0);
+	[self visibilityRangesForSize:size
+							range:CFRangeMake(0, 0)
+					numberOfLines:self.numberOfLines
+					   completion:^(CFRange visible, CFRange overflow){
+						   visibleRange = visible;
+						   overflowRange = overflow;
+					   }];
+	
+	if (overflowRange.length < 1) {
+		return;
+	}
+	
+	CGFloat proposedScale = 1.0f;
+	BOOL finished = NO;
+	NSInteger precisionCount = 0;
+	NSInteger precisionMax = (0 == precision) ? NSIntegerMax : precision;
+	
+	while (!finished) {
+		CGFloat textWidth = [self sizeThatFits:size range:overflowRange numberOfLines:1].width / self.numberOfLines;
+		if (self.lineBreakMode == UILineBreakModeWordWrap) {
+			textWidth *= kTTTLineBreakWordWrapTextWidthScalingFactor;
+		}
+		
+		CGFloat availableWidth = size.width * self.numberOfLines;
+		proposedScale = (availableWidth - textWidth) / availableWidth;
+		
+		self.text = NSAttributedStringByScalingFontSize(self.attributedText, proposedScale, self.minimumFontSize);
+		[self visibilityRangesForSize:size
+								range:CFRangeMake(0, 0)
+						numberOfLines:self.numberOfLines
+						   completion:^(CFRange visible, CFRange overflow){
+							   visibleRange = visible;
+							   overflowRange = overflow;
+						   }];
+		
+		if (overflowRange.length < 1) {
+			finished = YES;
+//			if (precisionCount > 0) {
+//				NSLog(@"%@ took %i loops to fit!", self.text, precisionCount);
+//			}
+		}
+		
+		precisionCount++;
+		if (precisionCount >= precisionMax) {
+			finished = YES;
+		}
+	}
+}
+
 - (void)drawTextInRect:(CGRect)rect {
     if (!self.attributedText) {
         [super drawTextInRect:rect];
         return;
     }
-        
+    
     NSAttributedString *originalAttributedText = nil;
     
-    // Adjust the font size to fit width, if necessarry 
+    // Adjust the font size to fit width, if necessarry
     if (self.adjustsFontSizeToFitWidth && self.numberOfLines > 0) {
         if (self.numberOfLines == 1) {
             CGFloat availableWidth = rect.size.width * self.numberOfLines;
@@ -833,32 +887,7 @@ static inline NSAttributedString * NSAttributedStringBySettingColorFromContext(N
 				self.text = NSAttributedStringByScalingFontSize(self.attributedText, availableWidth / textWidth, self.minimumFontSize);
 			}
         } else {
-            __block CFRange visibleRange = CFRangeMake(0, 0);
-            __block CFRange overflowRange = CFRangeMake(0, 0);
-            [self visibilityRangesForSize:rect.size
-                                    range:CFRangeMake(0, 0)
-                            numberOfLines:self.numberOfLines
-                               completion:^(CFRange visible, CFRange overflow){
-                                   visibleRange = visible;
-                                   overflowRange = overflow;
-                               }];
-            
-            if (overflowRange.length > 0) {
-                CGFloat textWidth = [self sizeThatFits:rect.size range:overflowRange numberOfLines:1].width / self.numberOfLines;
-                if (self.lineBreakMode == UILineBreakModeWordWrap) {
-                    textWidth *= kTTTLineBreakWordWrapTextWidthScalingFactor;
-                }
-                
-                CGFloat availableWidth = rect.size.width * self.numberOfLines;
-                CGFloat scale = (availableWidth - textWidth) / availableWidth;
-                
-                if (scale < 1) {
-                    originalAttributedText = [self.attributedText copy];
-                    self.text = NSAttributedStringByScalingFontSize(self.attributedText, scale, self.minimumFontSize);
-                }
-                
-            }
-
+			[self fontScaleThatFits:rect.size precision:4];
         }
     }
     
